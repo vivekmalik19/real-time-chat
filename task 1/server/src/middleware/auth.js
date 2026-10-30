@@ -84,3 +84,29 @@ export async function optionalAuthenticateToken(req, res, next) {
     next(error);
   }
 }
+
+/**
+ * Role-Based Authorization Middleware
+ * Enforces that authenticated user possesses at least one of the specified roles
+ */
+export function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required. Please sign in.',
+      });
+    }
+
+    const userRole = req.user.role || 'user';
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden. You do not have permission to perform this action.',
+        code: 'FORBIDDEN_ROLE',
+      });
+    }
+
+    next();
+  };
+}

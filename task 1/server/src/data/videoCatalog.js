@@ -22,6 +22,9 @@ export const VIDEO_CATALOG = [
     rating: 4.9,
     publishedDate: 'Blender Open Movie Project',
     tags: ['Blender', '3D Animation', 'CGI', 'Open Source', 'Creative Commons'],
+    allowDownload: true,
+    fileSize: 11053871,
+    fileSizeFormatted: '10.5 MB',
     subtitles: [
       {
         lang: 'en',
@@ -48,6 +51,9 @@ export const VIDEO_CATALOG = [
     rating: 4.8,
     publishedDate: 'Durian Open Movie Project',
     tags: ['Blender', 'Storyboarding', 'Fantasy', 'Character Art'],
+    allowDownload: true,
+    fileSize: 4372373,
+    fileSizeFormatted: '4.2 MB',
     subtitles: null,
   },
   {
@@ -67,6 +73,9 @@ export const VIDEO_CATALOG = [
     rating: 4.7,
     publishedDate: 'Open Media Foundation',
     tags: ['Nature', 'Marine', 'Underwater', 'Documentary', 'Cinematography'],
+    allowDownload: true,
+    fileSize: 23014356,
+    fileSizeFormatted: '21.9 MB',
     subtitles: null,
   },
   {
@@ -86,6 +95,9 @@ export const VIDEO_CATALOG = [
     rating: 4.6,
     publishedDate: 'W3C Media Standards Group',
     tags: ['HTML5', 'Web Media', 'Streaming', 'Video Standards', 'Consortium'],
+    allowDownload: true,
+    fileSize: 2757913,
+    fileSizeFormatted: '2.6 MB',
     subtitles: null,
   },
   {
@@ -105,6 +117,9 @@ export const VIDEO_CATALOG = [
     rating: 4.5,
     publishedDate: 'MDN Web Docs Demo Suite',
     tags: ['MDN', 'Demo Asset', 'CC0', 'Flower', 'Sample'],
+    allowDownload: true,
+    fileSize: 1128375,
+    fileSizeFormatted: '1.1 MB',
     subtitles: [
       {
         lang: 'en',
@@ -131,6 +146,32 @@ export const VIDEO_CATALOG = [
     rating: 4.6,
     publishedDate: 'MDN Web Docs Demo Suite',
     tags: ['MDN', 'Demo Asset', 'CC0', 'Animation', 'Sample'],
+    allowDownload: true,
+    fileSize: 515198,
+    fileSizeFormatted: '0.5 MB',
+    subtitles: null,
+  },
+  {
+    id: 'restricted-studio-preview',
+    title: 'Studio Archive: Cinema VFX Masterclass (Streaming Only)',
+    slug: 'restricted-studio-preview',
+    description:
+      'Proprietary studio production workflow demonstration featuring cinema camera calibration and color science. Offline distribution is strictly restricted to in-app stream viewing.',
+    category: 'Technology & Web Media',
+    author: 'MeetFlow Studio Productions',
+    duration: 45,
+    durationFormatted: '00:45',
+    videoUrl: 'https://vjs.zencdn.net/v/oceans.mp4',
+    thumbnailUrl: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=1280&auto=format&fit=crop&q=80',
+    quality: '1080p Full HD',
+    views: '120K',
+    rating: 4.8,
+    publishedDate: 'Studio Distribution Lab',
+    tags: ['Studio', 'Cinema', 'Restricted', 'Streaming Only'],
+    allowDownload: false,
+    downloadRestrictedReason: 'Licensing terms restrict this masterclass to streaming only. Offline downloads are not permitted.',
+    fileSize: 23014356,
+    fileSizeFormatted: '21.9 MB',
     subtitles: null,
   },
 ];

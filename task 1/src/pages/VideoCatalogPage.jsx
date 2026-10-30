@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Play,
@@ -12,11 +12,20 @@ import {
   BookOpen,
   ArrowUpDown,
   Tag,
+  History,
+  X,
+  RotateCcw,
 } from 'lucide-react';
 import Navbar from '../components/common/Navbar';
 import Footer from '../components/common/Footer';
 import { api } from '../utils/api';
-import { formatTime } from '../utils/formatTime';
+import { formatTime, formatRelativeTime } from '../utils/formatTime';
+import { useAuth } from '../context/AuthContext';
+import {
+  getStoredProgress,
+  getAllStoredProgress,
+  removeStoredProgress,
+} from '../utils/watchProgressStorage';
 
 const CATEGORIES = [
   'All',
@@ -27,56 +36,116 @@ const CATEGORIES = [
 ];
 
 export default function VideoCatalogPage() {
+  const { user } = useAuth();
   const [videos, setVideos] = useState([]);
+  const [historyList, setHistoryList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [sortBy, setSortBy] = useState('featured');
+  const [historyTab, setHistoryTab] = useState('all'); // 'all' | 'in-progress' | 'completed'
+
+  // Load catalog & history
+  const loadCatalogData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [videosRes, historyRes] = await Promise.all([
+        api.get('/videos'),
+        api.get('/videos/history').catch(() => ({ success: false, history: [] })),
+      ]);
+
+      let loadedVideos = [];
+      if (videosRes.success) {
+        // Enrich videos with scoped user progress (database or scoped localStorage)
+        loadedVideos = videosRes.videos.map((v) => {
+          if (!v.progress) {
+            const local = getStoredProgress(v.id, user?._id);
+            if (local && typeof local.currentTime === 'number' && local.currentTime > 0) {
+              const dur = local.duration || v.duration || 1;
+              const completionPercentage = Math.min(100, Math.round((local.currentTime / dur) * 100));
+              return {
+                ...v,
+                progress: {
+                  currentTime: local.currentTime,
+                  duration: dur,
+                  completionPercentage,
+                  completed: Boolean(local.completed) || completionPercentage >= 90,
+                  lastWatched: local.lastWatched || new Date().toISOString(),
+                },
+              };
+            }
+          }
+          return v;
+        });
+        setVideos(loadedVideos);
+      }
+
+      // Compute watch history
+      if (user && historyRes.success && historyRes.history?.length > 0) {
+        setHistoryList(historyRes.history);
+      } else {
+        // Anonymous/guest or fallback: read scoped localStorage
+        const localItems = getAllStoredProgress(user?._id);
+        const mappedHistory = [];
+        for (const item of localItems) {
+          const video = loadedVideos.find((v) => v.id === item.videoId);
+          if (video && item.currentTime > 0) {
+            mappedHistory.push({
+              ...video,
+              progress: {
+                currentTime: item.currentTime,
+                duration: item.duration || video.duration,
+                completionPercentage: item.completionPercentage || 0,
+                completed: item.completed,
+                lastWatched: item.lastWatched,
+              },
+            });
+          }
+        }
+        setHistoryList(mappedHistory);
+      }
+    } catch (err) {
+      console.error('Failed to load videos catalog:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
 
   useEffect(() => {
-    async function loadCatalog() {
-      try {
-        setLoading(true);
-        const data = await api.get('/videos');
-        if (data.success) {
-          // Merge local storage progress for any videos where server progress is null
-          const enriched = data.videos.map((v) => {
-            if (!v.progress) {
-              try {
-                const local = localStorage.getItem(`meetflow_progress_${v.id}`);
-                if (local) {
-                  const p = JSON.parse(local);
-                  if (p && typeof p.currentTime === 'number' && p.currentTime > 0) {
-                    const dur = p.duration || v.duration || 1;
-                    const completionPercentage = Math.min(100, Math.round((p.currentTime / dur) * 100));
-                    return {
-                      ...v,
-                      progress: {
-                        currentTime: p.currentTime,
-                        duration: dur,
-                        completionPercentage,
-                        completed: completionPercentage >= 90,
-                        lastWatched: p.timestamp ? new Date(p.timestamp) : new Date(),
-                      },
-                    };
-                  }
-                }
-              } catch {
-                // Ignore parse errors
-              }
-            }
-            return v;
-          });
-          setVideos(enriched);
-        }
-      } catch (err) {
-        console.error('Failed to load videos:', err);
-      } finally {
-        setLoading(false);
-      }
+    loadCatalogData();
+  }, [loadCatalogData]);
+
+  // Handle removing a video from watch history
+  const handleRemoveHistoryItem = async (e, videoId) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Remove from local state
+    setHistoryList((prev) => prev.filter((item) => item.id !== videoId));
+    setVideos((prev) =>
+      prev.map((v) => (v.id === videoId ? { ...v, progress: null } : v))
+    );
+
+    // Remove from local storage
+    removeStoredProgress(videoId, user?._id);
+
+    // Call backend delete endpoint if authenticated
+    try {
+      await api.delete(`/videos/${videoId}/progress`);
+    } catch {
+      // Ignored
     }
-    loadCatalog();
-  }, []);
+  };
+
+  // Filtered history according to tab
+  const filteredHistory = useMemo(() => {
+    return historyList.filter((item) => {
+      if (!item.progress) return false;
+      if (historyTab === 'in-progress') return !item.progress.completed && item.progress.currentTime > 3;
+      if (historyTab === 'completed') return item.progress.completed;
+      return true;
+    });
+  }, [historyList, historyTab]);
 
   // Filter & Sort videos
   const filteredVideos = useMemo(() => {
@@ -127,6 +196,150 @@ export default function VideoCatalogPage() {
             Stream high-definition open cinema, VFX masterclasses, and technical video streams with our custom HTML5 player. Progress is automatically synced to your account.
           </p>
         </div>
+
+        {/* Continue Watching & Watch History Section */}
+        {filteredHistory.length > 0 && !searchQuery && (
+          <div className="mb-12 p-6 rounded-3xl bg-surface-900/60 border border-slate-800 shadow-xl backdrop-blur-sm animate-fade-in">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-brand-500/10 border border-brand-500/20 text-brand-400">
+                  <History className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                    <span>Continue Watching</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-surface-800 text-slate-300 border border-slate-700">
+                      {filteredHistory.length}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-400">Pick up right where you left off</p>
+                </div>
+              </div>
+
+              {/* History Sub-tabs */}
+              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-surface-950 border border-slate-800 self-start sm:self-auto">
+                <button
+                  onClick={() => setHistoryTab('all')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                    historyTab === 'all'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  All Activity
+                </button>
+                <button
+                  onClick={() => setHistoryTab('in-progress')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                    historyTab === 'in-progress'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  In Progress
+                </button>
+                <button
+                  onClick={() => setHistoryTab('completed')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                    historyTab === 'completed'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Completed
+                </button>
+              </div>
+            </div>
+
+            {/* Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {filteredHistory.map((item) => (
+                <div
+                  key={`history-${item.id}`}
+                  className="group relative flex flex-col rounded-2xl bg-surface-950/80 hover:bg-surface-950 border border-slate-800 hover:border-slate-700 transition-all duration-200 overflow-hidden shadow-md"
+                >
+                  {/* Thumbnail */}
+                  <Link to={`/videos/${item.id}`} className="relative aspect-video w-full overflow-hidden bg-slate-900 block">
+                    <img
+                      src={item.thumbnailUrl}
+                      alt={item.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60" />
+
+                    {/* Quick Play Icon */}
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="w-10 h-10 rounded-full bg-brand-600/90 text-white flex items-center justify-center shadow-lg shadow-brand-600/40 transform scale-90 group-hover:scale-100 transition-transform">
+                        <Play className="w-4 h-4 fill-white translate-x-0.5" />
+                      </div>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-white/20">
+                      <div
+                        className={`h-full ${item.progress.completed ? 'bg-emerald-500' : 'bg-gradient-to-r from-brand-500 to-indigo-500'}`}
+                        style={{ width: `${item.progress.completionPercentage}%` }}
+                      />
+                    </div>
+
+                    {/* Completion or percentage badge */}
+                    <span className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm bg-black/70 text-slate-200 border border-white/10">
+                      {item.progress.completed ? 'Completed' : `${item.progress.completionPercentage}% watched`}
+                    </span>
+
+                    {/* Duration badge */}
+                    <span className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded text-[10px] font-mono bg-black/80 text-white">
+                      {item.durationFormatted}
+                    </span>
+                  </Link>
+
+                  {/* Content & Actions */}
+                  <div className="p-4 flex-1 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                        <span className="font-semibold text-brand-400 truncate max-w-[150px]">{item.category}</span>
+                        {item.progress.lastWatched && (
+                          <span>{formatRelativeTime(item.progress.lastWatched)}</span>
+                        )}
+                      </div>
+
+                      <Link to={`/videos/${item.id}`} className="block">
+                        <h3 className="text-sm font-bold text-white group-hover:text-brand-300 transition-colors line-clamp-1 mb-1">
+                          {item.title}
+                        </h3>
+                      </Link>
+
+                      <p className="text-[11px] text-slate-400">
+                        {item.progress.completed
+                          ? 'Watched to completion'
+                          : `Watched ${formatTime(item.progress.currentTime)} of ${formatTime(item.progress.duration || item.duration)}`}
+                      </p>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between">
+                      <Link
+                        to={`/videos/${item.id}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600/20 hover:bg-brand-600 text-brand-300 hover:text-white text-xs font-semibold transition-colors"
+                      >
+                        <Play className="w-3 h-3 fill-current" />
+                        <span>{item.progress.completed ? 'Watch Again' : 'Resume'}</span>
+                      </Link>
+
+                      <button
+                        onClick={(e) => handleRemoveHistoryItem(e, item.id)}
+                        title="Remove from history"
+                        className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Search, Category, and Sort Toolbar */}
         <div className="flex flex-col gap-4 mb-8">
@@ -279,8 +492,13 @@ export default function VideoCatalogPage() {
                       <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-brand-400 mb-1.5">
                         <span className="truncate">{video.category}</span>
                         {hasProgress && !isCompleted && (
-                          <span className="text-amber-400 font-mono">
-                            {progress.completionPercentage}% watched
+                          <span className="text-amber-400 font-mono text-[10px]">
+                            {progress.completionPercentage}% watched{progress.lastWatched ? ` • ${formatRelativeTime(progress.lastWatched)}` : ''}
+                          </span>
+                        )}
+                        {isCompleted && (
+                          <span className="text-emerald-400 font-mono text-[10px]">
+                            Completed{progress.lastWatched ? ` • ${formatRelativeTime(progress.lastWatched)}` : ''}
                           </span>
                         )}
                       </div>

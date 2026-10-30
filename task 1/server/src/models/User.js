@@ -45,6 +45,28 @@ const userSchema = new mongoose.Schema(
       default: 'auto',
     },
     trustedDevices: [trustedDeviceSchema],
+    role: {
+      type: String,
+      enum: ['user', 'moderator', 'admin'],
+      default: 'user',
+      index: true,
+    },
+    avatar: {
+      type: String,
+      default: null,
+    },
+    location: {
+      type: String,
+      default: null,
+    },
+    suspiciousAttempts: {
+      type: Number,
+      default: 0,
+    },
+    lastSuspiciousAttempt: {
+      type: Date,
+      default: null,
+    },
     otp: {
       hash: { type: String },
       expiresAt: { type: Date },
@@ -70,6 +92,9 @@ userSchema.methods.toSafeJSON = function () {
     id: this._id,
     name: this.name,
     email: this.email,
+    role: this.role || 'user',
+    avatar: this.avatar || null,
+    location: this.location || null,
     themePreference: this.themePreference,
     trustedDeviceCount: this.trustedDevices ? this.trustedDevices.length : 0,
     createdAt: this.createdAt,

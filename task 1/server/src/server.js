@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,8 +8,12 @@ import { connectDB } from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import securityRoutes from './routes/securityRoutes.js';
 import videoRoutes from './routes/videoRoutes.js';
+import downloadRoutes from './routes/downloadRoutes.js';
+import subscriptionRoutes from './routes/subscriptionRoutes.js';
+import commentRoutes from './routes/commentRoutes.js';
 import { generalLimiter } from './middleware/rateLimiter.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { initMeetingSocket, getIceServers } from './socket/meetingSocket.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +70,17 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/videos', videoRoutes);
+app.use('/api/downloads', downloadRoutes);
+app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/comments', commentRoutes);
+
+// Endpoint to expose STUN / TURN ICE servers securely
+app.get('/api/meeting/ice-servers', (req, res) => {
+  res.status(200).json({
+    success: true,
+    iceServers: getIceServers(),
+  });
+});
 
 // Catch-all 404 for unknown API endpoints
 app.use('/api/*', (req, res) => {
@@ -77,16 +93,21 @@ app.use('/api/*', (req, res) => {
 // Centralized error handler
 app.use(errorHandler);
 
+// Create HTTP server and attach Socket.IO signaling engine
+const server = http.createServer(app);
+initMeetingSocket(server);
+
 // Start server after connecting to database
 async function startServer() {
   await connectDB();
 
-  app.listen(config.port, () => {
+  server.listen(config.port, () => {
     console.log(`[MeetFlow Server] Running in ${config.nodeEnv} mode on port ${config.port}`);
     console.log(`[MeetFlow Server] API Health: http://localhost:${config.port}/api/health`);
+    console.log(`[MeetFlow Server] WebRTC Signaling Engine Ready on Socket.IO`);
   });
 }
 
 startServer();
 
-export default app;
+export { app, server };

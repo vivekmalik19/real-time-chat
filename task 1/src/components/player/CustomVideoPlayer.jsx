@@ -6,6 +6,7 @@ import {
   RefreshCw,
   CheckCircle2,
   Clock,
+  RotateCcw,
 } from 'lucide-react';
 import PlayerControls from './PlayerControls';
 import NextVideoOverlay from './NextVideoOverlay';
@@ -13,6 +14,8 @@ import ShortcutsModal from './ShortcutsModal';
 import { mediaManager } from '../../utils/mediaManager';
 import { api } from '../../utils/api';
 import { formatTime } from '../../utils/formatTime';
+import { useAuth } from '../../context/AuthContext';
+import { getStoredProgress, saveStoredProgress } from '../../utils/watchProgressStorage';
 
 /**
  * Custom HTML5 Video Player
@@ -27,6 +30,7 @@ export default function CustomVideoPlayer({
   onToggleTheater = null,
   className = '',
 }) {
+  const { user } = useAuth();
   const containerRef = useRef(null);
   const videoRef = useRef(null);
   const playerId = useRef(`player_${video.id}_${Math.random().toString(36).substring(2, 7)}`).current;
@@ -92,29 +96,28 @@ export default function CustomVideoPlayer({
       videoRef.current.load();
     }
 
-    // Check if initial progress exists in server response OR localStorage
+    // Check if initial progress exists in server response OR scoped local storage
     let savedTime = video.progress?.currentTime || 0;
+    const isCompleted = video.progress?.completed;
+
     if (!savedTime) {
-      try {
-        const local = localStorage.getItem(`meetflow_progress_${video.id}`);
-        if (local) {
-          const parsed = JSON.parse(local);
-          if (parsed && typeof parsed.currentTime === 'number') {
-            savedTime = parsed.currentTime;
-          }
-        }
-      } catch {
-        // ignore JSON parse error
+      const local = getStoredProgress(video.id, user?._id);
+      if (local && typeof local.currentTime === 'number') {
+        savedTime = local.currentTime;
       }
     }
 
     const videoDuration = video.duration || 0;
-    if (savedTime > 3 && videoDuration && savedTime < videoDuration - 5) {
+    if (isCompleted) {
+      setResumeNotice('Completed previously');
+      const timer = setTimeout(() => setResumeNotice(null), 3500);
+      return () => clearTimeout(timer);
+    } else if (savedTime > 3 && videoDuration && savedTime < videoDuration - 5) {
       setResumeNotice(`Resumed from ${formatTime(savedTime)}`);
-      const timer = setTimeout(() => setResumeNotice(null), 4000);
+      const timer = setTimeout(() => setResumeNotice(null), 4500);
       return () => clearTimeout(timer);
     }
-  }, [video.id, video.duration, video.progress]);
+  }, [video.id, video.duration, video.progress, user?._id]);
 
   // Apply saved progress on loadedmetadata
   const handleLoadedMetadata = () => {
@@ -123,58 +126,108 @@ export default function CustomVideoPlayer({
     setDuration(vidDuration);
 
     let savedTime = video.progress?.currentTime || 0;
+    const isCompleted = video.progress?.completed;
+
     if (!savedTime) {
-      try {
-        const local = localStorage.getItem(`meetflow_progress_${video.id}`);
-        if (local) {
-          const parsed = JSON.parse(local);
-          if (parsed && typeof parsed.currentTime === 'number') {
-            savedTime = parsed.currentTime;
-          }
-        }
-      } catch {
-        // ignore JSON parse error
+      const local = getStoredProgress(video.id, user?._id);
+      if (local && typeof local.currentTime === 'number') {
+        savedTime = local.currentTime;
       }
     }
 
-    if (savedTime > 3 && vidDuration && savedTime < vidDuration - 5) {
+    if (!isCompleted && savedTime > 3 && vidDuration && savedTime < vidDuration - 5) {
       videoRef.current.currentTime = savedTime;
       setCurrentTime(savedTime);
     }
   };
 
-  // Progress saving function (periodically & on pause)
+  // Progress saving function (periodically, on pause, or on seek)
   const saveWatchProgress = useCallback(
-    async (timeToSave, explicitDuration) => {
-      if (timeToSave === undefined || timeToSave === null || timeToSave < 0) return;
-      const currentDuration = explicitDuration || duration || video.duration;
+    async (timeToSave, explicitDuration, isExplicitComplete = false) => {
+      const numTime = Number(timeToSave);
+      if (isNaN(numTime) || numTime < 0) return;
 
-      // Always persist to localStorage for instant local retrieval across guest sessions
-      try {
-        localStorage.setItem(
-          `meetflow_progress_${video.id}`,
-          JSON.stringify({
-            currentTime: Math.round(timeToSave),
-            duration: Math.round(currentDuration),
-            timestamp: Date.now(),
-          })
-        );
-      } catch {
-        // Ignore storage errors
-      }
+      const numDuration = Number(explicitDuration) || Number(duration) || Number(video.duration) || 0;
+      if (isNaN(numDuration) || numDuration <= 0) return;
 
-      // Sync with backend API (supports both authenticated users and anonymous sessions)
+      const clampedTime = Math.min(Math.max(0, numTime), numDuration);
+      const completionPercentage = numDuration > 0 ? Math.min(100, Math.round((clampedTime / numDuration) * 100)) : 0;
+      const completed = isExplicitComplete || completionPercentage >= 90;
+
+      // Persist to user-scoped storage (ensures no cross-user leakage)
+      saveStoredProgress(
+        video.id,
+        {
+          currentTime: clampedTime,
+          duration: numDuration,
+          completionPercentage,
+          completed,
+          lastWatched: new Date().toISOString(),
+        },
+        user?._id
+      );
+
+      // Sync with backend API
       try {
         await api.post(`/videos/${video.id}/progress`, {
-          currentTime: Math.round(timeToSave),
-          duration: Math.round(currentDuration),
+          currentTime: Math.round(clampedTime),
+          duration: Math.round(numDuration),
         });
-      } catch {
-        // Handled gracefully (offline or unauthenticated)
+      } catch (err) {
+        // Silently handled: progress is already safely stored locally
       }
     },
-    [video.id, duration, video.duration]
+    [video.id, duration, video.duration, user?._id]
   );
+
+  // Safe page leaving handler (pagehide, beforeunload, and unmount)
+  useEffect(() => {
+    const handleLeave = () => {
+      if (videoRef.current && videoRef.current.currentTime > 0) {
+        const time = videoRef.current.currentTime;
+        const dur = videoRef.current.duration || duration || video.duration;
+        const clamped = Math.min(time, dur);
+        const comp = dur > 0 ? Math.min(100, Math.round((clamped / dur) * 100)) : 0;
+        const isDone = comp >= 90;
+
+        // Immediate local storage flush
+        saveStoredProgress(
+          video.id,
+          {
+            currentTime: clamped,
+            duration: dur,
+            completionPercentage: comp,
+            completed: isDone,
+            lastWatched: new Date().toISOString(),
+          },
+          user?._id
+        );
+
+        // Send keepalive request to backend
+        try {
+          api.post(
+            `/videos/${video.id}/progress`,
+            {
+              currentTime: Math.round(clamped),
+              duration: Math.round(dur),
+            },
+            { keepalive: true }
+          ).catch(() => {});
+        } catch {
+          // Ignore keepalive error
+        }
+      }
+    };
+
+    window.addEventListener('pagehide', handleLeave);
+    window.addEventListener('beforeunload', handleLeave);
+
+    return () => {
+      window.removeEventListener('pagehide', handleLeave);
+      window.removeEventListener('beforeunload', handleLeave);
+      handleLeave();
+    };
+  }, [video.id, duration, video.duration, user?._id]);
 
   // Time update event handler
   const handleTimeUpdate = () => {
@@ -580,9 +633,23 @@ export default function CustomVideoPlayer({
 
       {/* Resume from position Floating Badge */}
       {resumeNotice && (
-        <div className="absolute top-4 left-4 z-30 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface-950/90 border border-brand-500/40 text-brand-300 text-xs font-medium shadow-xl backdrop-blur-md animate-fade-in">
+        <div className="absolute top-4 left-4 z-30 flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-surface-950/90 border border-brand-500/40 text-brand-300 text-xs font-medium shadow-xl backdrop-blur-md animate-fade-in">
           <Clock className="w-3.5 h-3.5 text-brand-400" />
           <span>{resumeNotice}</span>
+          {currentTime > 5 && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSeek(0);
+                setResumeNotice(null);
+              }}
+              title="Restart from beginning"
+              className="ml-1 inline-flex items-center gap-1 text-[11px] text-white hover:text-brand-300 underline font-semibold transition-colors"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Start over</span>
+            </button>
+          )}
         </div>
       )}
 

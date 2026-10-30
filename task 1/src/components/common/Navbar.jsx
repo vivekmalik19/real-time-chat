@@ -13,6 +13,7 @@ import {
   LogOut,
   ChevronDown,
   BookOpen,
+  Download,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -100,6 +101,19 @@ export default function Navbar() {
               <BookOpen className="w-3.5 h-3.5" />
               Videos
             </Link>
+            {isAuthenticated && (
+              <Link
+                to="/downloads"
+                className={`text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  location.pathname === '/downloads'
+                    ? 'text-brand-400 font-semibold'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" />
+                Downloads
+              </Link>
+            )}
             <a
               href="https://github.com"
               target="_blank"
@@ -169,6 +183,15 @@ export default function Navbar() {
                       >
                         <Shield className="w-4 h-4 text-emerald-400" />
                         <span>Security & Devices</span>
+                      </Link>
+
+                      <Link
+                        to="/downloads"
+                        onClick={() => setUserDropdownOpen(false)}
+                        className="flex items-center gap-2.5 px-4 py-2 text-xs font-medium text-slate-300 hover:bg-surface-800 hover:text-white transition-colors"
+                      >
+                        <Download className="w-4 h-4 text-indigo-400" />
+                        <span>Downloads & Quota</span>
                       </Link>
                     </div>
 
@@ -298,6 +321,15 @@ export default function Navbar() {
               >
                 <Shield className="w-4 h-4 text-emerald-400" />
                 <span>Security & Devices</span>
+              </Link>
+
+              <Link
+                to="/downloads"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center gap-2 py-2 px-3 text-sm font-medium text-slate-200 hover:bg-surface-800 rounded-lg"
+              >
+                <Download className="w-4 h-4 text-indigo-400" />
+                <span>Downloads & Quota</span>
               </Link>
 
               <button

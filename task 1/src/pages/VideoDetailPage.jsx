@@ -11,16 +11,26 @@ import {
   Bookmark,
   Play,
   SkipForward,
+  History,
+  Download,
+  AlertTriangle,
+  AlertCircle,
+  X,
+  Zap,
 } from 'lucide-react';
 import Navbar from '../components/common/Navbar';
 import Footer from '../components/common/Footer';
 import CustomVideoPlayer from '../components/player/CustomVideoPlayer';
+import CommentsSection from '../components/comments/CommentsSection';
 import { api } from '../utils/api';
-import { formatTime } from '../utils/formatTime';
+import { formatTime, formatRelativeTime } from '../utils/formatTime';
+import { useAuth } from '../context/AuthContext';
+import { getStoredProgress } from '../utils/watchProgressStorage';
 
 export default function VideoDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user, openAuthModal } = useAuth();
 
   const [video, setVideo] = useState(null);
   const [allVideos, setAllVideos] = useState([]);
@@ -28,6 +38,13 @@ export default function VideoDetailPage() {
   const [error, setError] = useState(null);
   const [isTheaterMode, setIsTheaterMode] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Download states
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false);
+  const [downloadLoading, setDownloadLoading] = useState(false);
+  const [downloadQuota, setDownloadQuota] = useState(null);
+  const [downloadResult, setDownloadResult] = useState(null);
+  const [downloadError, setDownloadError] = useState(null);
 
   // Load video and catalog
   useEffect(() => {
@@ -43,29 +60,22 @@ export default function VideoDetailPage() {
 
         if (videoRes.success) {
           let currentVid = videoRes.video;
-          // Check local storage progress if backend progress is null
+          // Check scoped local storage progress if backend progress is null
           if (!currentVid.progress) {
-            try {
-              const local = localStorage.getItem(`meetflow_progress_${id}`);
-              if (local) {
-                const p = JSON.parse(local);
-                if (p && typeof p.currentTime === 'number' && p.currentTime > 0) {
-                  const dur = p.duration || currentVid.duration || 1;
-                  const completionPercentage = Math.min(100, Math.round((p.currentTime / dur) * 100));
-                  currentVid = {
-                    ...currentVid,
-                    progress: {
-                      currentTime: p.currentTime,
-                      duration: dur,
-                      completionPercentage,
-                      completed: completionPercentage >= 90,
-                      lastWatched: p.timestamp ? new Date(p.timestamp) : new Date(),
-                    },
-                  };
-                }
-              }
-            } catch {
-              // Ignore parse error
+            const local = getStoredProgress(id, user?._id);
+            if (local && typeof local.currentTime === 'number' && local.currentTime > 0) {
+              const dur = local.duration || currentVid.duration || 1;
+              const completionPercentage = Math.min(100, Math.round((local.currentTime / dur) * 100));
+              currentVid = {
+                ...currentVid,
+                progress: {
+                  currentTime: local.currentTime,
+                  duration: dur,
+                  completionPercentage,
+                  completed: Boolean(local.completed) || completionPercentage >= 90,
+                  lastWatched: local.lastWatched || new Date().toISOString(),
+                },
+              };
             }
           }
           setVideo(currentVid);
@@ -76,27 +86,20 @@ export default function VideoDetailPage() {
         if (catalogRes.success) {
           const enrichedList = catalogRes.videos.map((v) => {
             if (!v.progress) {
-              try {
-                const local = localStorage.getItem(`meetflow_progress_${v.id}`);
-                if (local) {
-                  const p = JSON.parse(local);
-                  if (p && typeof p.currentTime === 'number' && p.currentTime > 0) {
-                    const dur = p.duration || v.duration || 1;
-                    const completionPercentage = Math.min(100, Math.round((p.currentTime / dur) * 100));
-                    return {
-                      ...v,
-                      progress: {
-                        currentTime: p.currentTime,
-                        duration: dur,
-                        completionPercentage,
-                        completed: completionPercentage >= 90,
-                        lastWatched: p.timestamp ? new Date(p.timestamp) : new Date(),
-                      },
-                    };
-                  }
-                }
-              } catch {
-                // Ignore parse errors
+              const local = getStoredProgress(v.id, user?._id);
+              if (local && typeof local.currentTime === 'number' && local.currentTime > 0) {
+                const dur = local.duration || v.duration || 1;
+                const completionPercentage = Math.min(100, Math.round((local.currentTime / dur) * 100));
+                return {
+                  ...v,
+                  progress: {
+                    currentTime: local.currentTime,
+                    duration: dur,
+                    completionPercentage,
+                    completed: Boolean(local.completed) || completionPercentage >= 90,
+                    lastWatched: local.lastWatched || new Date().toISOString(),
+                  },
+                };
               }
             }
             return v;
@@ -112,7 +115,7 @@ export default function VideoDetailPage() {
 
     fetchVideoData();
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [id]);
+  }, [id, user?._id]);
 
   // Compute related video recommendations & queue
   const otherVideos = allVideos.filter((v) => v.id !== id);
@@ -135,6 +138,65 @@ export default function VideoDetailPage() {
 
   // Next video is the top recommended video or fallback to sequence
   const nextVideo = recommendedVideos.length > 0 ? recommendedVideos[0] : null;
+
+  // Open download modal and check quota
+  const handleOpenDownloadModal = async () => {
+    if (!user) {
+      openAuthModal('login');
+      return;
+    }
+
+    setDownloadModalOpen(true);
+    setDownloadError(null);
+    setDownloadResult(null);
+
+    try {
+      const qRes = await api.get('/downloads/quota');
+      if (qRes.success) {
+        setDownloadQuota(qRes);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch quota:', err);
+    }
+  };
+
+  // Perform authorized video download
+  const handleConfirmDownload = async () => {
+    try {
+      setDownloadLoading(true);
+      setDownloadError(null);
+
+      const idempotencyKey = `req_${user?._id}_${video.id}_${Date.now()}`;
+      const res = await api.post('/downloads/request', {
+        videoId: video.id,
+        quality: video.quality,
+        idempotencyKey,
+      });
+
+      if (res.success && res.downloadUrl) {
+        setDownloadResult(res);
+
+        // Trigger browser download via stream URL
+        const fullUrl = `http://localhost:5001${res.downloadUrl}`;
+        const a = document.createElement('a');
+        a.href = fullUrl;
+        a.download = res.fileName || `${video.title}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // Refresh quota
+        const qRes = await api.get('/downloads/quota');
+        if (qRes.success) {
+          setDownloadQuota(qRes);
+        }
+      }
+    } catch (err) {
+      setDownloadError(err.message || 'Download authorization failed.');
+    } finally {
+      setDownloadLoading(false);
+    }
+  };
 
   const handleShare = () => {
     if (navigator.clipboard) {
@@ -243,6 +305,36 @@ export default function VideoDetailPage() {
               {video.title}
             </h1>
 
+            {/* Meaningful Watch Progress & Last Watched Banner */}
+            {video.progress && video.progress.currentTime > 0 && (
+              <div className="mb-4 p-3 rounded-xl bg-surface-900/90 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 text-xs">
+                  <div className={`p-1.5 rounded-lg ${video.progress.completed ? 'bg-emerald-500/20 text-emerald-400' : 'bg-brand-500/20 text-brand-400'}`}>
+                    {video.progress.completed ? <CheckCircle2 className="w-4 h-4" /> : <History className="w-4 h-4" />}
+                  </div>
+                  <div>
+                    <span className="font-semibold text-slate-200">
+                      {video.progress.completed
+                        ? 'Completed'
+                        : `Watched ${formatTime(video.progress.currentTime)} of ${formatTime(video.progress.duration || video.duration)} (${video.progress.completionPercentage}%)`}
+                    </span>
+                    {video.progress.lastWatched && (
+                      <span className="text-slate-400 ml-2 text-[11px]">
+                        • Last activity {formatRelativeTime(video.progress.lastWatched)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-full sm:w-36 h-1.5 rounded-full bg-surface-800 overflow-hidden">
+                  <div
+                    className={`h-full ${video.progress.completed ? 'bg-emerald-500' : 'bg-gradient-to-r from-brand-500 to-indigo-500'}`}
+                    style={{ width: `${video.progress.completionPercentage}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Metrics & Action Bar */}
             <div className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-slate-800">
               <div className="flex items-center gap-4 text-xs text-slate-400">
@@ -261,6 +353,14 @@ export default function VideoDetailPage() {
 
               {/* Action Buttons */}
               <div className="flex items-center gap-2">
+                <button
+                  onClick={handleOpenDownloadModal}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white shadow-md shadow-brand-500/20 text-xs font-semibold transition-all"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
+
                 <button
                   onClick={handleShare}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-900 hover:bg-surface-800 border border-slate-700/80 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
@@ -294,6 +394,9 @@ export default function VideoDetailPage() {
                 </div>
               )}
             </div>
+
+            {/* Multilingual Comments & Discussion Section (Task 6) */}
+            <CommentsSection videoId={id} />
           </div>
 
           {/* Right Column: Recommended & Up Next Queue */}
@@ -373,6 +476,196 @@ export default function VideoDetailPage() {
       </main>
 
       <Footer />
+
+      {/* Secure Video Download Authorization Modal */}
+      {downloadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="relative w-full max-w-lg bg-surface-900 border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden p-6 text-white">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400">
+                  <Download className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Download Video</h3>
+                  <p className="text-xs text-slate-400">Official Task 2 • Authorized Delivery</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDownloadModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-surface-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="py-5 space-y-4">
+              {/* Video Snapshot Card */}
+              <div className="flex items-center gap-3 p-3 rounded-2xl bg-surface-950/70 border border-slate-800">
+                <img
+                  src={video.thumbnailUrl}
+                  alt={video.title}
+                  className="w-20 h-14 object-cover rounded-xl border border-slate-800 shrink-0"
+                />
+                <div className="min-w-0 flex-1">
+                  <h4 className="text-xs font-bold text-white line-clamp-1">{video.title}</h4>
+                  <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
+                    <span className="px-1.5 py-0.2 rounded bg-surface-800 text-slate-300 font-bold uppercase text-[9px]">
+                      {video.quality}
+                    </span>
+                    <span>•</span>
+                    <span>{video.fileSizeFormatted || 'Estimated 10.5 MB'}</span>
+                    <span>•</span>
+                    <span className="text-brand-400">{video.category}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Inaccessible Video State */}
+              {video.allowDownload === false ? (
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <div>
+                    <strong className="block font-bold mb-0.5">Distribution Restricted</strong>
+                    <span>{video.downloadRestrictedReason || 'This masterclass is restricted to in-app stream playback only.'}</span>
+                  </div>
+                </div>
+              ) : downloadQuota?.isExpired ? (
+                /* Expired Subscription State */
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <div>
+                    <strong className="block font-bold mb-0.5">Subscription Expired</strong>
+                    <span>Your active subscription plan has expired. Please renew or upgrade your plan to unlock video downloads.</span>
+                    <div className="mt-2.5">
+                      <Link
+                        to="/downloads"
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-600 text-white font-semibold text-xs"
+                      >
+                        <span>Manage Subscription & Plan</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ) : downloadQuota && downloadQuota.daily.remaining === 0 ? (
+                /* Quota Exhausted State */
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                  <div>
+                    <strong className="block font-bold mb-0.5">Daily Quota Exhausted</strong>
+                    <span>
+                      You have used all {downloadQuota.daily.limit} download{downloadQuota.daily.limit === 1 ? '' : 's'} for today on your {downloadQuota.planName}. Quota resets at midnight IST.
+                    </span>
+                    <div className="mt-2.5">
+                      <Link
+                        to="/downloads"
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-600 text-white font-semibold text-xs"
+                      >
+                        <span>Upgrade Plan on Downloads Page</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Quota Status Gauge */
+                downloadQuota && (
+                  <div className="p-4 rounded-2xl bg-surface-950/70 border border-slate-800 space-y-2 text-xs">
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>Current Plan:</span>
+                      <strong className="text-white capitalize flex items-center gap-1">
+                        <span>{downloadQuota.planName}</span>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      </strong>
+                    </div>
+
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>Daily Allowance:</span>
+                      <strong className="font-mono text-emerald-400">
+                        {downloadQuota.daily.remaining} of {downloadQuota.daily.limit} remaining today
+                      </strong>
+                    </div>
+
+                    <div className="flex items-center justify-between text-slate-400 text-[11px] pt-1 border-t border-slate-800/80">
+                      <span>Daily reset:</span>
+                      <span>Midnight IST (resets in {Math.floor(downloadQuota.daily.resetsInSeconds / 3600)}h {Math.floor((downloadQuota.daily.resetsInSeconds % 3600) / 60)}m)</span>
+                    </div>
+                  </div>
+                )
+              )}
+
+              {/* Deduplication & Success Result Notice */}
+              {downloadResult && (
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                  <div>
+                    <strong className="block font-bold mb-0.5">Download Authorized!</strong>
+                    <span>Your video transfer has started in your browser.</span>
+                    {downloadResult.isDeduplicated && (
+                      <p className="mt-1 text-[11px] text-amber-300">
+                        ⚡ Free Re-download: Downloaded within the 15-minute window; 0 daily quota consumed!
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Error Notice */}
+              {downloadError && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <span>{downloadError}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-3">
+              <Link
+                to="/downloads"
+                onClick={() => setDownloadModalOpen(false)}
+                className="text-xs text-brand-400 hover:text-brand-300 transition-colors font-medium"
+              >
+                View All Downloads
+              </Link>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDownloadModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-surface-800 hover:bg-surface-700 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Close
+                </button>
+
+                {video.allowDownload !== false && !downloadQuota?.isExpired && (downloadQuota?.daily?.remaining > 0 || downloadResult?.isDeduplicated) && (
+                  <button
+                    type="button"
+                    disabled={downloadLoading}
+                    onClick={handleConfirmDownload}
+                    className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-brand-500/25 transition-all disabled:opacity-50"
+                  >
+                    {downloadLoading ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Authorizing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{downloadResult ? 'Download Again' : 'Confirm Download'}</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
